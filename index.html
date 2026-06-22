@@ -21,7 +21,7 @@
   <script type="text/babel">
     const { useState, useEffect, useRef, useMemo } = React;
 
-    // --- SVG Icon Components (Replaces lucide-react) ---
+    // --- SVG Icon Components ---
     const IconBase = ({ size = 24, className = "", fill = "none", children, ...props }) => (
       <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} {...props}>
         {children}
@@ -45,12 +45,16 @@
     const BarChart2 = (props) => <IconBase {...props}><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></IconBase>;
     const AlertCircle = (props) => <IconBase {...props}><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></IconBase>;
     const Info = (props) => <IconBase {...props}><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></IconBase>;
+    const Filter = (props) => <IconBase {...props}><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></IconBase>;
+    const Download = (props) => <IconBase {...props}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></IconBase>;
+    
+    // Sort Icons
+    const ChevronUp = (props) => <IconBase {...props}><polyline points="18 15 12 9 6 15"/></IconBase>;
+    const ChevronDown = (props) => <IconBase {...props}><polyline points="6 9 12 15 18 9"/></IconBase>;
+    const ChevronsUpDown = (props) => <IconBase {...props}><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></IconBase>;
 
-    // Unique ID Generator fallback
     const generateId = () => {
-      if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-        return crypto.randomUUID();
-      }
+      if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
       return Date.now().toString(36) + Math.random().toString(36).substr(2);
     };
 
@@ -74,16 +78,19 @@
           correctCountMax: '',
           speechRate: 1.0,
           autoSpeak: true,
-          listeningInterval: 2.0
+          listeningInterval: 2.0,
+          excludedCategories: [] // 除外されているカテゴリーのリスト
         };
       });
 
       const [view, setView] = useState('dashboard');
       const [importText, setImportText] = useState('');
       
-      // Custom UI States for Alerts/Confirms
       const [toast, setToast] = useState(null);
       const [confirmDialog, setConfirmDialog] = useState(null);
+
+      // List Sorting State
+      const [sortConfig, setSortConfig] = useState({ key: 'createdAt', direction: 'desc' });
       
       const showAlert = (message) => {
         setToast({ message });
@@ -98,12 +105,14 @@
       const [sessionLearnedIds, setSessionLearnedIds] = useState([]);
       
       // Listening State
-      const [listeningState, setListeningState] = useState({
-        queue: [],
-        currentIndex: 0,
-        isPlaying: false
-      });
+      const [listeningState, setListeningState] = useState({ queue: [], currentIndex: 0, isPlaying: false });
       const isPlayingRef = useRef(false);
+
+      // Extract unique categories from words
+      const availableCategories = useMemo(() => {
+        const cats = new Set(words.map(w => (w.category || '').trim()).filter(Boolean));
+        return Array.from(cats).sort();
+      }, [words]);
 
       // --- Effects ---
       useEffect(() => {
@@ -147,11 +156,9 @@
           };
 
           await speakText(word.english, 'en-US');
-          
           timeoutId = setTimeout(async () => {
             if (isCancelled || !isPlayingRef.current) return;
             await speakText(word.japanese, 'ja-JP');
-            
             if (isCancelled || !isPlayingRef.current) return;
             timeoutId = setTimeout(() => {
               if (isCancelled || !isPlayingRef.current) return;
@@ -169,11 +176,8 @@
         };
       }, [view, listeningState.isPlaying, listeningState.currentIndex, listeningState.queue, settings.speechRate, settings.listeningInterval]);
 
-
       // --- Helper Functions ---
-      const cleanText = (text) => {
-        return text.replace(/\[.*?\]|［.*?］/g, '').trim();
-      };
+      const cleanText = (text) => text.replace(/\[.*?\]|［.*?］/g, '').trim();
 
       const speak = (text, lang = 'en-US') => {
         if (!window.speechSynthesis) return;
@@ -194,33 +198,102 @@
       const handleImport = () => {
         const lines = importText.split('\n');
         let addedCount = 0;
+        let updatedCount = 0;
         const newWords = [...words];
 
         lines.forEach(line => {
+          if (!line.trim()) return;
+          // ヘッダー行と見られる場合はスキップ
+          if (line.startsWith('カテゴリー\t英語') || line.startsWith('英語\t日本語')) return;
+
           const parts = line.split('\t');
-          if (parts.length >= 2) {
-            const english = parts[0].trim();
-            const japanese = parts[1].trim();
-            if (english && japanese) {
-              if (!newWords.some(w => w.english === english && w.japanese === japanese)) {
-                newWords.push({
-                  id: generateId(),
-                  english,
-                  japanese,
-                  correctCount: 0,
-                  incorrectCount: 0,
-                  createdAt: Date.now()
-                });
-                addedCount++;
-              }
+          let category = '';
+          let english = '';
+          let japanese = '';
+          let correctCount = 0;
+          let incorrectCount = 0;
+
+          // 2列だけコピペされた場合は「英語」「日本語」として扱う
+          if (parts.length === 2) {
+             english = parts[0]?.trim();
+             japanese = parts[1]?.trim();
+          } else if (parts.length >= 3) {
+             // インポート順: カテゴリー、英語、日本語、正解数、不正解数
+             category = parts[0]?.trim() || '';
+             english = parts[1]?.trim();
+             japanese = parts[2]?.trim();
+             correctCount = parseInt(parts[3]) || 0;
+             incorrectCount = parseInt(parts[4]) || 0;
+          }
+
+          if (english && japanese) {
+            const existingIndex = newWords.findIndex(w => w.english === english && w.japanese === japanese);
+            if (existingIndex !== -1) {
+               // 既に存在する場合はカテゴリー、履歴を更新（履歴は多い方を優先して統合）
+               const current = newWords[existingIndex];
+               const mergedCorrect = Math.max(current.correctCount || 0, correctCount);
+               const mergedIncorrect = Math.max(current.incorrectCount || 0, incorrectCount);
+               
+               if (current.category !== category || 
+                   current.correctCount !== mergedCorrect || current.incorrectCount !== mergedIncorrect) {
+                   newWords[existingIndex] = { 
+                     ...current, 
+                     category, 
+                     correctCount: mergedCorrect,
+                     incorrectCount: mergedIncorrect
+                   };
+                   updatedCount++;
+               }
+            } else {
+              newWords.push({
+                id: generateId(),
+                english,
+                japanese,
+                category,
+                correctCount,
+                incorrectCount,
+                createdAt: Date.now()
+              });
+              addedCount++;
             }
           }
         });
 
         setWords(newWords);
         setImportText('');
-        showAlert(`${addedCount}語を追加・更新しました！`);
+        if (addedCount > 0 || updatedCount > 0) {
+           showAlert(`${addedCount}語を追加、${updatedCount}語を更新しました！`);
+        } else {
+           showAlert('追加・更新可能な単語が見つかりませんでした。');
+        }
         setView('dashboard');
+      };
+
+      const handleExport = () => {
+        if (words.length === 0) {
+          showAlert('エクスポートするデータがありません。');
+          return;
+        }
+
+        const tsvHeader = "カテゴリー\t英語\t意味(日本語)\t正解数\t不正解数\n";
+        const tsvData = words.map(w => 
+          `${w.category || ''}\t${w.english}\t${w.japanese}\t${w.correctCount}\t${w.incorrectCount}`
+        ).join('\n');
+        
+        const content = tsvHeader + tsvData;
+        const blob = new Blob([content], { type: 'text/tab-separated-values;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        
+        const a = document.createElement('a');
+        a.href = url;
+        const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        a.download = `VocabMaster_Export_${dateStr}.tsv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+        showAlert('データをエクスポートしました。');
       };
 
       const handleDeleteAll = () => {
@@ -236,15 +309,35 @@
 
       const handleResetWord = (id) => {
         setWords(words.map(w => w.id === id ? { ...w, correctCount: 0, incorrectCount: 0 } : w));
+        showAlert('学習履歴をリセットしました。');
+      };
+
+      const handleDeleteWord = (id) => {
+        setConfirmDialog({
+          message: 'この単語を削除してもよろしいですか？',
+          onConfirm: () => {
+            setWords(prev => prev.filter(w => w.id !== id));
+            setConfirmDialog(null);
+            showAlert('単語を削除しました。');
+          }
+        });
       };
 
       const generateQueue = (excludeIds = []) => {
         let filtered = [...words];
 
+        // 1. Exclude already learned IDs in session
         if (excludeIds.length > 0) {
           filtered = filtered.filter(w => !excludeIds.includes(w.id));
         }
 
+        // 2. Exclude Categories
+        const excludedCategories = settings.excludedCategories || [];
+        if (excludedCategories.length > 0) {
+           filtered = filtered.filter(w => !excludedCategories.includes((w.category || '').trim()));
+        }
+
+        // 3. Exclude Perfect
         if (settings.excludePerfect) {
           filtered = filtered.filter(w => {
             const total = w.correctCount + w.incorrectCount;
@@ -253,32 +346,35 @@
           });
         }
 
+        // 4. Accuracy Range
         filtered = filtered.filter(w => {
           const total = w.correctCount + w.incorrectCount;
           const rate = total === 0 ? 0 : (w.correctCount / total) * 100;
           return rate >= settings.accuracyMin && rate <= settings.accuracyMax;
         });
 
+        // 5. Correct Count Range
         filtered = filtered.filter(w => {
           const max = settings.correctCountMax === '' ? Infinity : Number(settings.correctCountMax);
           return w.correctCount >= settings.correctCountMin && w.correctCount <= max;
         });
 
+        // 6. Order
         if (settings.order === 'random') {
           filtered.sort(() => Math.random() - 0.5);
         } else if (settings.order === 'weakest') {
           filtered.sort((a, b) => {
             const rateA = getAccuracy(a.correctCount, a.incorrectCount);
             const rateB = getAccuracy(b.correctCount, b.incorrectCount);
-            if (rateA === rateB) {
-               return (a.correctCount + a.incorrectCount) - (b.correctCount + b.incorrectCount);
-            }
+            if (rateA === rateB) return (a.correctCount + a.incorrectCount) - (b.correctCount + b.incorrectCount);
             return rateA - rateB;
           });
         } else {
+          // registered order
           filtered.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
         }
 
+        // 7. Limit
         if (settings.limit !== 'all') {
           filtered = filtered.slice(0, Number(settings.limit));
         }
@@ -298,9 +394,7 @@
         setIsFlipped(false);
         setSessionResults([]);
         setView('study');
-        if (settings.autoSpeak) {
-          speak(queue[0].english);
-        }
+        if (settings.autoSpeak) speak(queue[0].english);
       };
 
       const startListening = () => {
@@ -309,11 +403,7 @@
           showAlert('条件に一致する単語がありません。フィルタリング設定を変更してください。');
           return;
         }
-        setListeningState({
-          queue,
-          currentIndex: 0,
-          isPlaying: true
-        });
+        setListeningState({ queue, currentIndex: 0, isPlaying: true });
         setView('listening');
       };
 
@@ -324,9 +414,7 @@
         if (currentIndex + 1 < studyQueue.length) {
           setCurrentIndex(prev => prev + 1);
           setIsFlipped(false);
-          if (settings.autoSpeak) {
-            speak(studyQueue[currentIndex + 1].english);
-          }
+          if (settings.autoSpeak) speak(studyQueue[currentIndex + 1].english);
         } else {
           finishStudy([...sessionResults, { wordId: currentWord.id, isCorrect, word: currentWord }]);
         }
@@ -357,9 +445,7 @@
         setIsFlipped(false);
         setSessionResults([]);
         setView('study');
-        if (settings.autoSpeak) {
-          speak(queue[0].english);
-        }
+        if (settings.autoSpeak) speak(queue[0].english);
       };
 
       const handleContinueLearning = () => {
@@ -376,10 +462,63 @@
         setIsFlipped(false);
         setSessionResults([]);
         setView('study');
-        if (settings.autoSpeak) {
-          speak(queue[0].english);
-        }
+        if (settings.autoSpeak) speak(queue[0].english);
       };
+
+      // --- Sorting Handlers ---
+      const requestSort = (key) => {
+        let direction = 'asc';
+        if (sortConfig.key === key && sortConfig.direction === 'asc') {
+          direction = 'desc';
+        }
+        setSortConfig({ key, direction });
+      };
+
+      const getSortIcon = (key) => {
+        if (sortConfig.key !== key) {
+          return <ChevronsUpDown size={14} className="text-gray-400 opacity-50 group-hover:opacity-100" />;
+        }
+        if (sortConfig.direction === 'asc') {
+          return <ChevronUp size={14} className="text-indigo-600 font-bold" />;
+        }
+        return <ChevronDown size={14} className="text-indigo-600 font-bold" />;
+      };
+
+      const sortedWords = useMemo(() => {
+        let sortableWords = [...words];
+        if (sortConfig !== null) {
+          sortableWords.sort((a, b) => {
+            let aValue = a[sortConfig.key];
+            let bValue = b[sortConfig.key];
+
+            // Handle special cases
+            if (sortConfig.key === 'accuracy') {
+              const totalA = a.correctCount + a.incorrectCount;
+              aValue = totalA === 0 ? -1 : (a.correctCount / totalA);
+              const totalB = b.correctCount + b.incorrectCount;
+              bValue = totalB === 0 ? -1 : (b.correctCount / totalB);
+            } 
+            else if (['category', 'english', 'japanese'].includes(sortConfig.key)) {
+              aValue = (aValue || '').toLowerCase();
+              bValue = (bValue || '').toLowerCase();
+              
+              const cmp = aValue.localeCompare(bValue, 'ja');
+              return sortConfig.direction === 'asc' ? cmp : -cmp;
+            }
+
+            // Default sorting for numbers and remaining types
+            if (aValue < bValue) {
+              return sortConfig.direction === 'asc' ? -1 : 1;
+            }
+            if (aValue > bValue) {
+              return sortConfig.direction === 'asc' ? 1 : -1;
+            }
+            return 0;
+          });
+        }
+        return sortableWords;
+      }, [words, sortConfig]);
+
 
       // --- UI Components ---
       const Navigation = () => (
@@ -400,7 +539,7 @@
                   <Headphones size={18} /> <span className="hidden sm:inline text-sm">聞き流し</span>
                 </button>
                 <button onClick={() => setView('import')} className={`p-2 rounded-lg flex items-center gap-1 whitespace-nowrap transition-colors ${view === 'import' ? 'bg-indigo-700' : 'hover:bg-indigo-500'}`}>
-                  <Database size={18} /> <span className="hidden sm:inline text-sm">データ管理</span>
+                  <Database size={18} /> <span className="hidden sm:inline text-sm">管理</span>
                 </button>
               </div>
             </div>
@@ -414,6 +553,20 @@
         const totalAttempts = words.reduce((sum, w) => sum + w.correctCount + w.incorrectCount, 0);
         const overallAccuracy = getAccuracy(totalCorrect, totalAttempts - totalCorrect);
         const perfectWordsCount = words.filter(w => w.correctCount > 0 && w.incorrectCount === 0).length;
+
+        // Custom th class for sortable headers
+        const ThSortable = ({ columnKey, children, className = "" }) => (
+          <th 
+            className={`p-3 border-b font-medium cursor-pointer hover:bg-gray-200 transition-colors group select-none ${className} ${sortConfig.key === columnKey ? 'bg-indigo-50/50' : ''}`}
+            onClick={() => requestSort(columnKey)}
+            title="クリックして並び替え"
+          >
+            <div className={`flex items-center gap-1 ${className.includes('text-center') ? 'justify-center' : ''}`}>
+              {children}
+              {getSortIcon(columnKey)}
+            </div>
+          </th>
+        );
 
         return (
           <div className="space-y-6 fade-in">
@@ -452,31 +605,35 @@
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
               <div className="p-4 border-b border-gray-100 bg-gray-50 flex justify-between items-center">
                 <h3 className="font-bold text-gray-700">単語リスト</h3>
-                <span className="text-sm text-gray-500">（最近追加された順）</span>
+                <span className="text-sm text-gray-500">（全 {words.length} 語）</span>
               </div>
               {words.length === 0 ? (
                 <div className="p-8 text-center text-gray-500">
                   <Database className="mx-auto mb-2 opacity-50" size={32} />
-                  <p>単語が登録されていません。<br/>「データ管理」から単語を追加してください。</p>
+                  <p>単語が登録されていません。<br/>「管理」から単語を追加してください。</p>
                 </div>
               ) : (
                 <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse min-w-[500px]">
+                  <table className="w-full text-left border-collapse min-w-[700px]">
                     <thead>
-                      <tr className="bg-gray-50 text-gray-600 text-sm">
-                        <th className="p-3 border-b font-medium">英語</th>
-                        <th className="p-3 border-b font-medium">日本語</th>
-                        <th className="p-3 border-b font-medium text-center">正答 / 不正答</th>
-                        <th className="p-3 border-b font-medium text-center">正答率</th>
+                      <tr className="bg-gray-100 text-gray-600 text-sm">
+                        <ThSortable columnKey="category" className="w-32">カテゴリー</ThSortable>
+                        <ThSortable columnKey="english">英語</ThSortable>
+                        <ThSortable columnKey="japanese">日本語</ThSortable>
+                        <ThSortable columnKey="correctCount" className="text-center">正答/不正答</ThSortable>
+                        <ThSortable columnKey="accuracy" className="text-center">正答率</ThSortable>
                         <th className="p-3 border-b font-medium text-center">操作</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {[...words].reverse().map(word => {
+                      {sortedWords.map(word => {
                         const total = word.correctCount + word.incorrectCount;
                         const accuracy = getAccuracy(word.correctCount, word.incorrectCount);
                         return (
                           <tr key={word.id} className="hover:bg-gray-50 border-b border-gray-50 transition-colors">
+                            <td className="p-3 text-sm text-indigo-600 font-medium">
+                              {word.category ? <span className="bg-indigo-50 px-2 py-1 rounded whitespace-nowrap">{word.category}</span> : <span className="text-gray-300">-</span>}
+                            </td>
                             <td className="p-3 font-medium">{word.english}</td>
                             <td className="p-3 text-gray-600">{word.japanese}</td>
                             <td className="p-3 text-center text-sm whitespace-nowrap">
@@ -492,13 +649,22 @@
                               ) : <span className="text-gray-400 text-sm">-</span>}
                             </td>
                             <td className="p-3 text-center">
-                              <button 
-                                onClick={() => handleResetWord(word.id)}
-                                className="p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition"
-                                title="履歴をリセット"
-                              >
-                                <RefreshCw size={16} />
-                              </button>
+                              <div className="flex justify-center items-center gap-1">
+                                <button 
+                                  onClick={() => handleResetWord(word.id)}
+                                  className="p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition"
+                                  title="履歴をリセット"
+                                >
+                                  <RefreshCw size={16} />
+                                </button>
+                                <button 
+                                  onClick={() => handleDeleteWord(word.id)}
+                                  className="p-2 text-gray-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
+                                  title="単語を削除"
+                                >
+                                  <Trash2 size={16} />
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         );
@@ -512,27 +678,56 @@
         );
       };
 
-      const renderImport = () => (
+      const renderDataManagement = () => (
         <div className="max-w-2xl mx-auto space-y-6 fade-in">
+          
+          {/* インポート */}
           <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
             <h2 className="text-2xl font-bold text-gray-800 mb-4 flex items-center gap-2">
-              <Database className="text-indigo-600"/> スプレッドシートからインポート
+              <Database className="text-indigo-600"/> データのインポート
             </h2>
             <p className="text-gray-600 mb-4 text-sm leading-relaxed">
-              GoogleスプレッドシートやExcelから「英語」「日本語」の2列を選択してコピーし、下の枠に貼り付けてください。<br/>
-              （タブ区切りテキストに対応しています）
+              「カテゴリー」「英語」「意味(日本語)」「正解数」「不正解数」の順でコピーし、下の枠に貼り付けてください。<br/>
+              （カテゴリーや正解数・不正解数は省略可能です。英語と意味の2列だけでもインポートできます）
             </p>
-            <div className="bg-blue-50 border border-blue-100 p-3 rounded-lg mb-4 text-sm text-blue-800 flex items-start gap-2">
+            <div className="bg-blue-50 border border-blue-100 p-4 rounded-lg mb-4 text-sm text-blue-800 flex items-start gap-2 overflow-hidden">
               <Info className="shrink-0 mt-0.5" size={16} />
-              <div>
-                <strong>データの例：</strong><br/>
-                apple &nbsp;&nbsp;&nbsp;&nbsp; りんご<br/>
-                dog &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 犬
+              <div className="w-full overflow-x-auto no-scrollbar">
+                <strong>データの例（列の順番）:</strong>
+                <div className="mt-2 bg-white rounded border border-blue-200 overflow-x-auto">
+                  <table className="w-full text-left text-xs whitespace-nowrap">
+                    <thead className="bg-blue-50/50 text-blue-800">
+                      <tr>
+                        <th className="p-2 font-medium border-b border-blue-100">カテゴリー</th>
+                        <th className="p-2 font-medium border-b border-blue-100">英語</th>
+                        <th className="p-2 font-medium border-b border-blue-100">意味(日本語)</th>
+                        <th className="p-2 font-medium border-b border-blue-100 text-center">正解数</th>
+                        <th className="p-2 font-medium border-b border-blue-100 text-center">不正解数</th>
+                      </tr>
+                    </thead>
+                    <tbody className="text-gray-600 font-mono">
+                      <tr className="border-b border-blue-50">
+                        <td className="p-2">金フレ</td>
+                        <td className="p-2">apple</td>
+                        <td className="p-2 font-sans">りんご</td>
+                        <td className="p-2 text-center">5</td>
+                        <td className="p-2 text-center">1</td>
+                      </tr>
+                      <tr>
+                        <td className="p-2 text-gray-400 font-sans">（省略可）</td>
+                        <td className="p-2">dog</td>
+                        <td className="p-2 font-sans">犬</td>
+                        <td className="p-2 text-gray-400 font-sans text-center">（省略可）</td>
+                        <td className="p-2 text-gray-400 font-sans text-center">（省略可）</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
             <textarea
-              className="w-full h-64 p-4 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition resize-none font-mono text-sm"
-              placeholder="ここにペーストしてください..."
+              className="w-full h-48 p-4 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition resize-none font-mono text-sm"
+              placeholder="ここにスプレッドシートやテキストデータをペーストしてください..."
               value={importText}
               onChange={(e) => setImportText(e.target.value)}
             ></textarea>
@@ -547,11 +742,30 @@
             </div>
           </div>
 
+          {/* エクスポート */}
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+            <h2 className="text-2xl font-bold text-gray-800 mb-4 flex items-center gap-2">
+              <Download className="text-emerald-600"/> データのエクスポート
+            </h2>
+            <p className="text-gray-600 mb-4 text-sm leading-relaxed">
+              登録されているすべての単語データ（学習履歴を含む）をTSV形式（タブ区切りテキスト）のファイルとしてダウンロードします。バックアップや他の端末への移行に利用できます。
+            </p>
+            <div className="flex justify-end gap-3">
+              <button 
+                onClick={handleExport}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2 rounded-lg font-semibold shadow-sm transition flex items-center gap-2"
+              >
+                <Download size={18} /> エクスポートを実行
+              </button>
+            </div>
+          </div>
+
+          {/* 全削除 */}
           <div className="bg-rose-50 p-6 rounded-xl border border-rose-100">
             <h3 className="text-rose-800 font-bold mb-2 flex items-center gap-2">
               <AlertCircle size={18} /> 危険な操作
             </h3>
-            <p className="text-rose-600 text-sm mb-4">登録されているすべての単語と学習履歴を削除します。この操作は取り消せません。</p>
+            <p className="text-rose-600 text-sm mb-4">登録されているすべての単語と学習履歴を完全に削除します。この操作は取り消せません。</p>
             <button 
               onClick={handleDeleteAll}
               className="bg-white border border-rose-200 text-rose-600 hover:bg-rose-100 px-4 py-2 rounded-lg font-semibold transition flex items-center gap-2 text-sm"
@@ -563,6 +777,25 @@
       );
 
       const renderSetupForm = (isListeningMode = false) => {
+        const toggleCategory = (cat) => {
+          const currentExcluded = settings.excludedCategories || [];
+          if (currentExcluded.includes(cat)) {
+             setSettings({...settings, excludedCategories: currentExcluded.filter(c => c !== cat)});
+          } else {
+             setSettings({...settings, excludedCategories: [...currentExcluded, cat]});
+          }
+        };
+
+        const setAllCategories = (selectAll) => {
+          if (selectAll) {
+             setSettings({...settings, excludedCategories: []});
+          } else {
+             setSettings({...settings, excludedCategories: availableCategories});
+          }
+        };
+
+        const currentExcluded = settings.excludedCategories || [];
+
         return (
           <div className="max-w-2xl mx-auto space-y-6 fade-in">
             <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
@@ -571,6 +804,40 @@
               </h2>
 
               <div className="space-y-6">
+                
+                {/* Categories Filter */}
+                {availableCategories.length > 0 && (
+                  <div>
+                    <h3 className="font-bold text-gray-800 mb-3 flex items-center gap-2">
+                      <Filter size={18} className="text-indigo-600"/> 対象カテゴリー
+                    </h3>
+                    <div className="bg-gray-50 border border-gray-200 p-4 rounded-xl">
+                      <div className="flex gap-2 mb-3 pb-3 border-b border-gray-200">
+                        <button onClick={() => setAllCategories(true)} className="text-xs font-bold bg-white border border-gray-300 px-3 py-1.5 rounded hover:bg-gray-100 transition">すべて選択</button>
+                        <button onClick={() => setAllCategories(false)} className="text-xs font-bold bg-white border border-gray-300 px-3 py-1.5 rounded hover:bg-gray-100 transition">すべて外す</button>
+                      </div>
+                      <div className="flex flex-wrap gap-3 max-h-48 overflow-y-auto pr-2">
+                        {availableCategories.map(cat => {
+                          const isChecked = !currentExcluded.includes(cat);
+                          return (
+                            <label key={cat} className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer border transition-colors ${isChecked ? 'bg-indigo-50 border-indigo-200' : 'bg-white border-gray-200 opacity-70 hover:bg-gray-50'}`}>
+                              <input 
+                                type="checkbox" 
+                                className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500"
+                                checked={isChecked}
+                                onChange={() => toggleCategory(cat)}
+                              />
+                              <span className="text-sm font-medium text-gray-800">{cat || '(カテゴリーなし)'}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <hr className="border-gray-100" />
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
                   <div>
                     <label className="block text-sm font-bold text-gray-700 mb-2">問題数</label>
@@ -582,7 +849,7 @@
                       <option value="10">10問</option>
                       <option value="20">20問</option>
                       <option value="50">50問</option>
-                      <option value="all">全問</option>
+                      <option value="all">全問（条件に合うものすべて）</option>
                     </select>
                   </div>
                   <div>
@@ -604,7 +871,7 @@
                 <div>
                   <h3 className="font-bold text-gray-800 mb-4">詳細フィルタリング</h3>
                   
-                  <label className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg mb-4 cursor-pointer hover:bg-gray-100 transition">
+                  <label className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg mb-4 cursor-pointer hover:bg-gray-100 transition border border-gray-200">
                     <input 
                       type="checkbox" 
                       className="w-5 h-5 text-indigo-600 rounded focus:ring-indigo-500"
@@ -727,19 +994,23 @@
             >
               <button 
                 onClick={(e) => { e.stopPropagation(); speak(word.english); }}
-                className="absolute top-4 right-4 p-3 bg-indigo-50 text-indigo-600 rounded-full hover:bg-indigo-100 transition"
+                className="absolute top-4 right-4 p-3 bg-indigo-50 text-indigo-600 rounded-full hover:bg-indigo-100 transition z-10"
               >
                 <Volume2 size={24} />
               </button>
               
+              <div className="absolute top-6 left-6 text-left">
+                 {word.category && <div className="text-xs font-bold text-indigo-500 bg-indigo-50 px-2 py-1 rounded inline-block mb-1">{word.category}</div>}
+              </div>
+
               {!isFlipped ? (
                 <>
-                  <h1 className="text-4xl sm:text-5xl font-bold text-gray-800 mb-4 tracking-tight">{word.english}</h1>
+                  <h1 className="text-4xl sm:text-5xl font-bold text-gray-800 mb-4 tracking-tight mt-6">{word.english}</h1>
                   <span className="text-gray-400 text-sm mt-4">タップして答えを見る</span>
                 </>
               ) : (
                 <>
-                  <h1 className="text-3xl sm:text-4xl font-bold text-gray-800 mb-6">{word.english}</h1>
+                  <h1 className="text-3xl sm:text-4xl font-bold text-gray-800 mb-6 mt-6">{word.english}</h1>
                   <div className="w-16 h-1 bg-indigo-200 rounded-full mb-6"></div>
                   <h2 className="text-3xl sm:text-4xl font-bold text-indigo-600 leading-tight">{word.japanese}</h2>
                 </>
@@ -813,7 +1084,10 @@
                  {sessionResults.map((res, i) => (
                    <li key={i} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between hover:bg-gray-50 transition gap-2">
                      <div>
-                       <div className="font-bold text-gray-800 text-lg">{res.word.english}</div>
+                       <div className="flex items-center gap-2 mb-1">
+                         <span className="font-bold text-gray-800 text-lg">{res.word.english}</span>
+                         {res.word.category && <span className="text-[10px] bg-gray-200 text-gray-600 px-2 py-0.5 rounded-full">{res.word.category}</span>}
+                       </div>
                        <div className="text-gray-500 text-sm">{res.word.japanese}</div>
                      </div>
                      <div>
@@ -885,8 +1159,12 @@
               </div>
             </div>
 
-            <div className="w-full bg-white p-10 rounded-3xl shadow-lg border border-purple-100 text-center mb-12">
-               <Headphones className="mx-auto text-purple-200 mb-6" size={48} />
+            <div className="w-full bg-white p-10 rounded-3xl shadow-lg border border-purple-100 text-center mb-12 relative">
+               <div className="absolute top-4 left-4 text-left">
+                 {word.category && <div className="text-xs font-bold text-purple-500 bg-purple-50 px-2 py-1 rounded inline-block mb-1">{word.category}</div>}
+               </div>
+
+               <Headphones className="mx-auto text-purple-200 mb-6 mt-4" size={48} />
                <h1 className="text-4xl sm:text-5xl font-black text-gray-800 mb-4">{word.english}</h1>
                <h2 className="text-2xl text-purple-600 font-bold">{word.japanese}</h2>
             </div>
@@ -975,7 +1253,7 @@
           
           <main className="max-w-4xl mx-auto px-4 pb-12">
             {view === 'dashboard' && renderDashboard()}
-            {view === 'import' && renderImport()}
+            {view === 'import' && renderDataManagement()}
             {view === 'setup' && renderSetupForm(false)}
             {view === 'listening_setup' && renderSetupForm(true)}
             {view === 'study' && renderStudy()}

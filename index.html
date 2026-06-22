@@ -79,7 +79,7 @@
           speechRate: 1.0,
           autoSpeak: true,
           listeningInterval: 2.0,
-          excludedCategories: [] // 除外されているカテゴリーのリスト
+          excludedCategories: []
         };
       });
 
@@ -91,6 +91,10 @@
 
       // List Sorting State
       const [sortConfig, setSortConfig] = useState({ key: 'createdAt', direction: 'desc' });
+
+      // --- Bulk Action States (Swipe to select) ---
+      const [selectedIds, setSelectedIds] = useState(new Set());
+      const dragState = useRef({ isDragging: false, isSelecting: true });
       
       const showAlert = (message) => {
         setToast({ message });
@@ -126,6 +130,19 @@
       useEffect(() => {
         isPlayingRef.current = listeningState.isPlaying;
       }, [listeningState.isPlaying]);
+
+      // Handle Global Mouse/Touch Up for Selection Dragging
+      useEffect(() => {
+        const handlePointerUp = () => { dragState.current.isDragging = false; };
+        window.addEventListener('pointerup', handlePointerUp);
+        window.addEventListener('touchend', handlePointerUp);
+        window.addEventListener('mouseup', handlePointerUp);
+        return () => {
+          window.removeEventListener('pointerup', handlePointerUp);
+          window.removeEventListener('touchend', handlePointerUp);
+          window.removeEventListener('mouseup', handlePointerUp);
+        };
+      }, []);
 
       // Listening Loop Effect
       useEffect(() => {
@@ -203,7 +220,6 @@
 
         lines.forEach(line => {
           if (!line.trim()) return;
-          // ヘッダー行と見られる場合はスキップ
           if (line.startsWith('カテゴリー\t英語') || line.startsWith('英語\t日本語')) return;
 
           const parts = line.split('\t');
@@ -213,12 +229,10 @@
           let correctCount = 0;
           let incorrectCount = 0;
 
-          // 2列だけコピペされた場合は「英語」「日本語」として扱う
           if (parts.length === 2) {
              english = parts[0]?.trim();
              japanese = parts[1]?.trim();
           } else if (parts.length >= 3) {
-             // インポート順: カテゴリー、英語、日本語、正解数、不正解数
              category = parts[0]?.trim() || '';
              english = parts[1]?.trim();
              japanese = parts[2]?.trim();
@@ -229,7 +243,6 @@
           if (english && japanese) {
             const existingIndex = newWords.findIndex(w => w.english === english && w.japanese === japanese);
             if (existingIndex !== -1) {
-               // 既に存在する場合はカテゴリー、履歴を更新（履歴は多い方を優先して統合）
                const current = newWords[existingIndex];
                const mergedCorrect = Math.max(current.correctCount || 0, correctCount);
                const mergedIncorrect = Math.max(current.incorrectCount || 0, incorrectCount);
@@ -301,8 +314,21 @@
           message: 'すべての単語データを削除します。よろしいですか？',
           onConfirm: () => {
             setWords([]);
+            setSelectedIds(new Set());
             setConfirmDialog(null);
             showAlert('全データを削除しました。');
+          }
+        });
+      };
+
+      const handleBulkDelete = () => {
+        setConfirmDialog({
+          message: `選択した ${selectedIds.size} 件の単語を削除してもよろしいですか？`,
+          onConfirm: () => {
+            setWords(prev => prev.filter(w => !selectedIds.has(w.id)));
+            setSelectedIds(new Set());
+            setConfirmDialog(null);
+            showAlert(`${selectedIds.size}件の単語を削除しました。`);
           }
         });
       };
@@ -317,27 +343,72 @@
           message: 'この単語を削除してもよろしいですか？',
           onConfirm: () => {
             setWords(prev => prev.filter(w => w.id !== id));
+            setSelectedIds(prev => {
+              const next = new Set(prev);
+              next.delete(id);
+              return next;
+            });
             setConfirmDialog(null);
             showAlert('単語を削除しました。');
           }
         });
       };
 
+      // --- Selection Drag Handlers ---
+      const handleRowPointerDown = (e, id) => {
+        if (e.pointerType === 'mouse' && e.button !== 0) return; // Only left click for mouse
+        const isSelected = selectedIds.has(id);
+        dragState.current = { isDragging: true, isSelecting: !isSelected };
+        
+        setSelectedIds(prev => {
+          const next = new Set(prev);
+          !isSelected ? next.add(id) : next.delete(id);
+          return next;
+        });
+      };
+
+      const handleRowPointerEnter = (e, id) => {
+        if (e.pointerType === 'touch') return; // Touch uses TouchMove
+        if (!dragState.current.isDragging) return;
+        
+        setSelectedIds(prev => {
+          const next = new Set(prev);
+          dragState.current.isSelecting ? next.add(id) : next.delete(id);
+          return next;
+        });
+      };
+
+      const handleTableTouchMove = (e) => {
+        if (!dragState.current.isDragging) return;
+        const touch = e.touches[0];
+        const el = document.elementFromPoint(touch.clientX, touch.clientY);
+        if (!el) return;
+        const tr = el.closest('tr[data-word-id]');
+        if (tr) {
+          const id = tr.getAttribute('data-word-id');
+          if (id) {
+            setSelectedIds(prev => {
+              const next = new Set(prev);
+              dragState.current.isSelecting ? next.add(id) : next.delete(id);
+              return next;
+            });
+          }
+        }
+      };
+
+
       const generateQueue = (excludeIds = []) => {
         let filtered = [...words];
 
-        // 1. Exclude already learned IDs in session
         if (excludeIds.length > 0) {
           filtered = filtered.filter(w => !excludeIds.includes(w.id));
         }
 
-        // 2. Exclude Categories
         const excludedCategories = settings.excludedCategories || [];
         if (excludedCategories.length > 0) {
            filtered = filtered.filter(w => !excludedCategories.includes((w.category || '').trim()));
         }
 
-        // 3. Exclude Perfect
         if (settings.excludePerfect) {
           filtered = filtered.filter(w => {
             const total = w.correctCount + w.incorrectCount;
@@ -346,20 +417,17 @@
           });
         }
 
-        // 4. Accuracy Range
         filtered = filtered.filter(w => {
           const total = w.correctCount + w.incorrectCount;
           const rate = total === 0 ? 0 : (w.correctCount / total) * 100;
           return rate >= settings.accuracyMin && rate <= settings.accuracyMax;
         });
 
-        // 5. Correct Count Range
         filtered = filtered.filter(w => {
           const max = settings.correctCountMax === '' ? Infinity : Number(settings.correctCountMax);
           return w.correctCount >= settings.correctCountMin && w.correctCount <= max;
         });
 
-        // 6. Order
         if (settings.order === 'random') {
           filtered.sort(() => Math.random() - 0.5);
         } else if (settings.order === 'weakest') {
@@ -370,11 +438,9 @@
             return rateA - rateB;
           });
         } else {
-          // registered order
           filtered.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
         }
 
-        // 7. Limit
         if (settings.limit !== 'all') {
           filtered = filtered.slice(0, Number(settings.limit));
         }
@@ -603,10 +669,53 @@
             </div>
 
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-              <div className="p-4 border-b border-gray-100 bg-gray-50 flex justify-between items-center">
-                <h3 className="font-bold text-gray-700">単語リスト</h3>
-                <span className="text-sm text-gray-500">（全 {words.length} 語）</span>
+              <div className="p-4 border-b border-gray-100 bg-gray-50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <div>
+                  <h3 className="font-bold text-gray-700">単語リスト</h3>
+                  <span className="text-sm text-gray-500">（全 {words.length} 語）</span>
+                </div>
+                
+                {/* Category Bulk Selection */}
+                {words.length > 0 && availableCategories.length > 0 && (
+                  <div className="flex items-center gap-2">
+                    <select 
+                      className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:ring-2 focus:ring-indigo-500 outline-none w-full sm:w-auto"
+                      onChange={(e) => {
+                        const cat = e.target.value;
+                        if(!cat) return;
+                        const ids = words.filter(w => (w.category||'').trim() === cat).map(w => w.id);
+                        setSelectedIds(prev => new Set([...prev, ...ids]));
+                        e.target.value = ""; 
+                      }}
+                    >
+                      <option value="">カテゴリーで一括選択...</option>
+                      {availableCategories.map(cat => <option key={cat} value={cat}>{cat || '(カテゴリーなし)'}</option>)}
+                    </select>
+                  </div>
+                )}
               </div>
+
+              {/* Bulk Action Bar */}
+              {selectedIds.size > 0 && (
+                <div className="bg-indigo-50 px-4 py-3 border-b border-indigo-100 flex items-center justify-between fade-in">
+                  <span className="font-bold text-indigo-800">{selectedIds.size} 件を選択中</span>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={() => setSelectedIds(new Set())} 
+                      className="px-3 py-1.5 bg-white text-gray-600 rounded-lg border border-gray-300 hover:bg-gray-100 text-sm font-medium transition shadow-sm"
+                    >
+                      キャンセル
+                    </button>
+                    <button 
+                      onClick={handleBulkDelete} 
+                      className="px-3 py-1.5 bg-rose-500 text-white rounded-lg hover:bg-rose-600 text-sm font-bold flex items-center gap-1 shadow-sm transition"
+                    >
+                      <Trash2 size={16}/> 削除する
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {words.length === 0 ? (
                 <div className="p-8 text-center text-gray-500">
                   <Database className="mx-auto mb-2 opacity-50" size={32} />
@@ -614,9 +723,26 @@
                 </div>
               ) : (
                 <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse min-w-[700px]">
+                  <table 
+                    className="w-full text-left border-collapse min-w-[700px] select-none"
+                    onTouchMove={handleTableTouchMove}
+                  >
                     <thead>
                       <tr className="bg-gray-100 text-gray-600 text-sm">
+                        <th className="p-3 border-b w-12 text-center">
+                          <input 
+                            type="checkbox"
+                            className="w-5 h-5 text-indigo-600 rounded focus:ring-indigo-500 cursor-pointer"
+                            checked={sortedWords.length > 0 && selectedIds.size === sortedWords.length}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedIds(new Set(sortedWords.map(w => w.id)));
+                              } else {
+                                setSelectedIds(new Set());
+                              }
+                            }}
+                          />
+                        </th>
                         <ThSortable columnKey="category" className="w-32">カテゴリー</ThSortable>
                         <ThSortable columnKey="english">英語</ThSortable>
                         <ThSortable columnKey="japanese">日本語</ThSortable>
@@ -629,8 +755,27 @@
                       {sortedWords.map(word => {
                         const total = word.correctCount + word.incorrectCount;
                         const accuracy = getAccuracy(word.correctCount, word.incorrectCount);
+                        const isSelected = selectedIds.has(word.id);
+
                         return (
-                          <tr key={word.id} className="hover:bg-gray-50 border-b border-gray-50 transition-colors">
+                          <tr 
+                            key={word.id} 
+                            data-word-id={word.id}
+                            className={`border-b transition-colors ${isSelected ? 'bg-indigo-50/70 border-indigo-100' : 'hover:bg-gray-50 border-gray-50'}`}
+                          >
+                            <td 
+                              className="p-3 text-center border-b cursor-pointer"
+                              style={{ touchAction: 'none' }} // Prevent scrolling while swipe-selecting on mobile
+                              onPointerDown={(e) => handleRowPointerDown(e, word.id)}
+                              onPointerEnter={(e) => handleRowPointerEnter(e, word.id)}
+                            >
+                              <input 
+                                type="checkbox" 
+                                className="w-5 h-5 text-indigo-600 rounded focus:ring-indigo-500 pointer-events-none"
+                                checked={isSelected}
+                                readOnly
+                              />
+                            </td>
                             <td className="p-3 text-sm text-indigo-600 font-medium">
                               {word.category ? <span className="bg-indigo-50 px-2 py-1 rounded whitespace-nowrap">{word.category}</span> : <span className="text-gray-300">-</span>}
                             </td>

@@ -220,10 +220,11 @@
 
         lines.forEach(line => {
           if (!line.trim()) return;
-          if (line.startsWith('カテゴリー\t英語') || line.startsWith('英語\t日本語')) return;
+          if (line.startsWith('カテゴリー\tNo.') || line.startsWith('カテゴリー\t番号') || line.startsWith('英語\t日本語')) return;
 
           const parts = line.split('\t');
           let category = '';
+          let serialNumber = '';
           let english = '';
           let japanese = '';
           let correctCount = 0;
@@ -232,12 +233,17 @@
           if (parts.length === 2) {
              english = parts[0]?.trim();
              japanese = parts[1]?.trim();
-          } else if (parts.length >= 3) {
+          } else if (parts.length >= 4) {
+             category = parts[0]?.trim() || '';
+             serialNumber = parts[1]?.trim() || '';
+             english = parts[2]?.trim();
+             japanese = parts[3]?.trim();
+             correctCount = parseInt(parts[4]) || 0;
+             incorrectCount = parseInt(parts[5]) || 0;
+          } else if (parts.length === 3) {
              category = parts[0]?.trim() || '';
              english = parts[1]?.trim();
              japanese = parts[2]?.trim();
-             correctCount = parseInt(parts[3]) || 0;
-             incorrectCount = parseInt(parts[4]) || 0;
           }
 
           if (english && japanese) {
@@ -248,10 +254,12 @@
                const mergedIncorrect = Math.max(current.incorrectCount || 0, incorrectCount);
                
                if (current.category !== category || 
+                   current.serialNumber !== serialNumber ||
                    current.correctCount !== mergedCorrect || current.incorrectCount !== mergedIncorrect) {
                    newWords[existingIndex] = { 
                      ...current, 
                      category, 
+                     serialNumber,
                      correctCount: mergedCorrect,
                      incorrectCount: mergedIncorrect
                    };
@@ -263,6 +271,7 @@
                 english,
                 japanese,
                 category,
+                serialNumber,
                 correctCount,
                 incorrectCount,
                 createdAt: Date.now()
@@ -288,9 +297,9 @@
           return;
         }
 
-        const tsvHeader = "カテゴリー\t英語\t意味(日本語)\t正解数\t不正解数\n";
+        const tsvHeader = "カテゴリー\t番号\t英語\t意味(日本語)\t正解数\t不正解数\n";
         const tsvData = words.map(w => 
-          `${w.category || ''}\t${w.english}\t${w.japanese}\t${w.correctCount}\t${w.incorrectCount}`
+          `${w.category || ''}\t${w.serialNumber || ''}\t${w.english}\t${w.japanese}\t${w.correctCount}\t${w.incorrectCount}`
         ).join('\n');
         
         const content = tsvHeader + tsvData;
@@ -743,6 +752,7 @@
                             }}
                           />
                         </th>
+                        <ThSortable columnKey="serialNumber" className="w-16 text-center">No.</ThSortable>
                         <ThSortable columnKey="category" className="w-32">カテゴリー</ThSortable>
                         <ThSortable columnKey="english">英語</ThSortable>
                         <ThSortable columnKey="japanese">日本語</ThSortable>
@@ -776,6 +786,7 @@
                                 readOnly
                               />
                             </td>
+                            <td className="p-3 text-center text-gray-400 font-mono text-sm">{word.serialNumber || '-'}</td>
                             <td className="p-3 text-sm text-indigo-600 font-medium">
                               {word.category ? <span className="bg-indigo-50 px-2 py-1 rounded whitespace-nowrap">{word.category}</span> : <span className="text-gray-300">-</span>}
                             </td>
@@ -832,8 +843,8 @@
               <Database className="text-indigo-600"/> データのインポート
             </h2>
             <p className="text-gray-600 mb-4 text-sm leading-relaxed">
-              「カテゴリー」「英語」「意味(日本語)」「正解数」「不正解数」の順でコピーし、下の枠に貼り付けてください。<br/>
-              （カテゴリーや正解数・不正解数は省略可能です。英語と意味の2列だけでもインポートできます）
+              「カテゴリー」「番号」「英語」「意味(日本語)」「正解数」「不正解数」の順でコピーし、下の枠に貼り付けてください。<br/>
+              （一部の列は省略可能です。英語と意味の2列だけでもインポートできます）
             </p>
             <div className="bg-blue-50 border border-blue-100 p-4 rounded-lg mb-4 text-sm text-blue-800 flex items-start gap-2 overflow-hidden">
               <Info className="shrink-0 mt-0.5" size={16} />
@@ -844,6 +855,7 @@
                     <thead className="bg-blue-50/50 text-blue-800">
                       <tr>
                         <th className="p-2 font-medium border-b border-blue-100">カテゴリー</th>
+                        <th className="p-2 font-medium border-b border-blue-100">番号</th>
                         <th className="p-2 font-medium border-b border-blue-100">英語</th>
                         <th className="p-2 font-medium border-b border-blue-100">意味(日本語)</th>
                         <th className="p-2 font-medium border-b border-blue-100 text-center">正解数</th>
@@ -853,12 +865,14 @@
                     <tbody className="text-gray-600 font-mono">
                       <tr className="border-b border-blue-50">
                         <td className="p-2">金フレ</td>
+                        <td className="p-2">1</td>
                         <td className="p-2">apple</td>
                         <td className="p-2 font-sans">りんご</td>
                         <td className="p-2 text-center">5</td>
                         <td className="p-2 text-center">1</td>
                       </tr>
                       <tr>
+                        <td className="p-2 text-gray-400 font-sans">（省略可）</td>
                         <td className="p-2 text-gray-400 font-sans">（省略可）</td>
                         <td className="p-2">dog</td>
                         <td className="p-2 font-sans">犬</td>
@@ -1146,6 +1160,7 @@
               
               <div className="absolute top-6 left-6 text-left">
                  {word.category && <div className="text-xs font-bold text-indigo-500 bg-indigo-50 px-2 py-1 rounded inline-block mb-1">{word.category}</div>}
+                 {word.serialNumber && <div className="text-xs text-gray-400 font-mono">No.{word.serialNumber}</div>}
               </div>
 
               {!isFlipped ? (
@@ -1307,6 +1322,7 @@
             <div className="w-full bg-white p-10 rounded-3xl shadow-lg border border-purple-100 text-center mb-12 relative">
                <div className="absolute top-4 left-4 text-left">
                  {word.category && <div className="text-xs font-bold text-purple-500 bg-purple-50 px-2 py-1 rounded inline-block mb-1">{word.category}</div>}
+                 {word.serialNumber && <div className="text-xs text-gray-400 font-mono">No.{word.serialNumber}</div>}
                </div>
 
                <Headphones className="mx-auto text-purple-200 mb-6 mt-4" size={48} />

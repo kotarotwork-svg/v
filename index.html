@@ -101,10 +101,12 @@
       const touchStart = useRef({ x: null, y: null });
       const mainTabs = ['dashboard', 'setup', 'listening_setup', 'import'];
 
-      const changeView = (newView) => {
+      const changeView = (newView, forceDir = null) => {
         const currentIdx = mainTabs.indexOf(view);
         const newIdx = mainTabs.indexOf(newView);
-        if (currentIdx !== -1 && newIdx !== -1 && currentIdx !== newIdx) {
+        if (forceDir) {
+          setSlideDir(forceDir);
+        } else if (currentIdx !== -1 && newIdx !== -1 && currentIdx !== newIdx) {
           setSlideDir(newIdx > currentIdx ? 'right' : 'left');
         } else {
           setSlideDir('fade');
@@ -135,12 +137,14 @@
           
           if (currentIndex !== -1) {
             // 左スワイプ（指を左に動かす） = 右のタブへ
-            if (deltaX > 0 && currentIndex < mainTabs.length - 1) {
-              changeView(mainTabs[currentIndex + 1]);
+            if (deltaX > 0) {
+              const nextIndex = (currentIndex + 1) % mainTabs.length;
+              changeView(mainTabs[nextIndex], 'right');
             } 
             // 右スワイプ（指を右に動かす） = 左のタブへ
-            else if (deltaX < 0 && currentIndex > 0) {
-              changeView(mainTabs[currentIndex - 1]);
+            else if (deltaX < 0) {
+              const prevIndex = (currentIndex - 1 + mainTabs.length) % mainTabs.length;
+              changeView(mainTabs[prevIndex], 'left');
             }
           }
         }

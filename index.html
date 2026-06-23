@@ -3,7 +3,6 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
   <title>VocabMaster - 英単語学習アプリ</title>
   
   <!-- Tailwind CSS -->
@@ -72,7 +71,7 @@
         return saved ? JSON.parse(saved) : {
           order: 'registered',
           limit: '20',
-          excludePerfect: false,
+          excludePerfect: true, // デフォルトで完璧な単語を除外するように変更
           accuracyMin: 0,
           accuracyMax: 100,
           correctCountMin: 0,
@@ -97,6 +96,57 @@
       const [selectedIds, setSelectedIds] = useState(new Set());
       const dragState = useRef({ isDragging: false, isSelecting: true });
       
+      // --- Swipe and Animation State ---
+      const [slideDir, setSlideDir] = useState('fade');
+      const touchStart = useRef({ x: null, y: null });
+      const mainTabs = ['dashboard', 'setup', 'listening_setup', 'import'];
+
+      const changeView = (newView) => {
+        const currentIdx = mainTabs.indexOf(view);
+        const newIdx = mainTabs.indexOf(newView);
+        if (currentIdx !== -1 && newIdx !== -1 && currentIdx !== newIdx) {
+          setSlideDir(newIdx > currentIdx ? 'right' : 'left');
+        } else {
+          setSlideDir('fade');
+        }
+        setView(newView);
+      };
+
+      const handleGlobalTouchStart = (e) => {
+        if (dragState.current.isDragging) return;
+        // 入力要素や横スクロール要素の上でのスワイプは無視する（誤爆防止）
+        if (e.target.closest('textarea, input, select, .overflow-x-auto, table')) return;
+        touchStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      };
+
+      const handleGlobalTouchEnd = (e) => {
+        if (dragState.current.isDragging) return;
+        if (touchStart.current.x === null) return;
+        
+        const touchEndX = e.changedTouches[0].clientX;
+        const touchEndY = e.changedTouches[0].clientY;
+        
+        const deltaX = touchStart.current.x - touchEndX;
+        const deltaY = touchStart.current.y - touchEndY;
+        
+        // 縦移動が少なく、横方向に60px以上スワイプされた場合
+        if (Math.abs(deltaX) > 60 && Math.abs(deltaY) < 50) {
+          const currentIndex = mainTabs.indexOf(view);
+          
+          if (currentIndex !== -1) {
+            // 左スワイプ（指を左に動かす） = 右のタブへ
+            if (deltaX > 0 && currentIndex < mainTabs.length - 1) {
+              changeView(mainTabs[currentIndex + 1]);
+            } 
+            // 右スワイプ（指を右に動かす） = 左のタブへ
+            else if (deltaX < 0 && currentIndex > 0) {
+              changeView(mainTabs[currentIndex - 1]);
+            }
+          }
+        }
+        touchStart.current = { x: null, y: null };
+      };
+
       const showAlert = (message) => {
         setToast({ message });
         setTimeout(() => setToast(null), 3000);
@@ -212,6 +262,13 @@
         return Math.round((correct / total) * 100);
       };
 
+      // 完璧な単語（マスター済み）の判定：5回以上正答 ＆ 正答率90%以上
+      const isPerfect = (word) => {
+        const total = word.correctCount + word.incorrectCount;
+        if (total === 0) return false;
+        return word.correctCount >= 5 && (word.correctCount / total) >= 0.9;
+      };
+
       // --- Handlers ---
       const handleImport = () => {
         const lines = importText.split('\n');
@@ -289,7 +346,7 @@
         } else {
            showAlert('追加・更新可能な単語が見つかりませんでした。');
         }
-        setView('dashboard');
+        changeView('dashboard');
       };
 
       const handleExport = () => {
@@ -344,8 +401,26 @@
       };
 
       const handleResetWord = (id) => {
-        setWords(words.map(w => w.id === id ? { ...w, correctCount: 0, incorrectCount: 0 } : w));
-        showAlert('学習履歴をリセットしました。');
+        setConfirmDialog({
+          message: 'この単語の学習履歴をリセットしてもよろしいですか？',
+          onConfirm: () => {
+            setWords(prev => prev.map(w => w.id === id ? { ...w, correctCount: 0, incorrectCount: 0 } : w));
+            setConfirmDialog(null);
+            showAlert('学習履歴をリセットしました。');
+          }
+        });
+      };
+
+      const handleBulkReset = () => {
+        setConfirmDialog({
+          message: `選択した ${selectedIds.size} 件の単語の学習履歴をリセットしてもよろしいですか？`,
+          onConfirm: () => {
+            setWords(prev => prev.map(w => selectedIds.has(w.id) ? { ...w, correctCount: 0, incorrectCount: 0 } : w));
+            setSelectedIds(new Set());
+            setConfirmDialog(null);
+            showAlert(`${selectedIds.size}件の学習履歴をリセットしました。`);
+          }
+        });
       };
 
       const handleDeleteWord = (id) => {
@@ -407,7 +482,7 @@
       };
 
 
-      const generateQueue = (excludeIds = []) => {
+      const generateQueue = (excludeIds = [], ignoreLimit = false) => {
         let filtered = [...words];
 
         if (excludeIds.length > 0) {
@@ -420,11 +495,7 @@
         }
 
         if (settings.excludePerfect) {
-          filtered = filtered.filter(w => {
-            const total = w.correctCount + w.incorrectCount;
-            if (total === 0) return true;
-            return (w.correctCount / total) < 1;
-          });
+          filtered = filtered.filter(w => !isPerfect(w)); // 完璧な単語を除外
         }
 
         filtered = filtered.filter(w => {
@@ -451,7 +522,7 @@
           filtered.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
         }
 
-        if (settings.limit !== 'all') {
+        if (!ignoreLimit && settings.limit !== 'all') {
           filtered = filtered.slice(0, Number(settings.limit));
         }
 
@@ -530,7 +601,7 @@
         const queue = generateQueue(newLearnedIds);
         if (queue.length === 0) {
           showAlert('すべての単語を一通り学習しました！');
-          setView('dashboard');
+          changeView('dashboard');
           return;
         }
         setStudyQueue(queue);
@@ -601,20 +672,20 @@
         <nav className="bg-indigo-600 text-white shadow-md rounded-b-xl mb-6 sticky top-0 z-50">
           <div className="max-w-4xl mx-auto px-4">
             <div className="flex items-center justify-between h-14">
-              <div className="font-bold text-lg flex items-center gap-2" onClick={() => setView('dashboard')} style={{cursor:'pointer'}}>
+              <div className="font-bold text-lg flex items-center gap-2" onClick={() => changeView('dashboard')} style={{cursor:'pointer'}}>
                 <BookOpen size={24} /> VocabMaster
               </div>
               <div className="flex space-x-1 sm:space-x-4 overflow-x-auto no-scrollbar">
-                <button onClick={() => setView('dashboard')} className={`p-2 rounded-lg flex items-center gap-1 whitespace-nowrap transition-colors ${view === 'dashboard' ? 'bg-indigo-700' : 'hover:bg-indigo-500'}`}>
+                <button onClick={() => changeView('dashboard')} className={`p-2 rounded-lg flex items-center gap-1 whitespace-nowrap transition-colors ${view === 'dashboard' ? 'bg-indigo-700' : 'hover:bg-indigo-500'}`}>
                   <Home size={18} /> <span className="hidden sm:inline text-sm">ホーム</span>
                 </button>
-                <button onClick={() => setView('setup')} className={`p-2 rounded-lg flex items-center gap-1 whitespace-nowrap transition-colors ${view === 'setup' ? 'bg-indigo-700' : 'hover:bg-indigo-500'}`}>
+                <button onClick={() => changeView('setup')} className={`p-2 rounded-lg flex items-center gap-1 whitespace-nowrap transition-colors ${view === 'setup' ? 'bg-indigo-700' : 'hover:bg-indigo-500'}`}>
                   <Play size={18} /> <span className="hidden sm:inline text-sm">学習</span>
                 </button>
-                <button onClick={() => setView('listening_setup')} className={`p-2 rounded-lg flex items-center gap-1 whitespace-nowrap transition-colors ${view === 'listening_setup' ? 'bg-indigo-700' : 'hover:bg-indigo-500'}`}>
+                <button onClick={() => changeView('listening_setup')} className={`p-2 rounded-lg flex items-center gap-1 whitespace-nowrap transition-colors ${view === 'listening_setup' ? 'bg-indigo-700' : 'hover:bg-indigo-500'}`}>
                   <Headphones size={18} /> <span className="hidden sm:inline text-sm">聞き流し</span>
                 </button>
-                <button onClick={() => setView('import')} className={`p-2 rounded-lg flex items-center gap-1 whitespace-nowrap transition-colors ${view === 'import' ? 'bg-indigo-700' : 'hover:bg-indigo-500'}`}>
+                <button onClick={() => changeView('import')} className={`p-2 rounded-lg flex items-center gap-1 whitespace-nowrap transition-colors ${view === 'import' ? 'bg-indigo-700' : 'hover:bg-indigo-500'}`}>
                   <Database size={18} /> <span className="hidden sm:inline text-sm">管理</span>
                 </button>
               </div>
@@ -624,11 +695,12 @@
       );
 
       const renderDashboard = () => {
+        const animClass = slideDir === 'right' ? 'slide-in-right' : slideDir === 'left' ? 'slide-in-left' : 'fade-in';
         const totalWords = words.length;
         const totalCorrect = words.reduce((sum, w) => sum + w.correctCount, 0);
         const totalAttempts = words.reduce((sum, w) => sum + w.correctCount + w.incorrectCount, 0);
         const overallAccuracy = getAccuracy(totalCorrect, totalAttempts - totalCorrect);
-        const perfectWordsCount = words.filter(w => w.correctCount > 0 && w.incorrectCount === 0).length;
+        const perfectWordsCount = words.filter(isPerfect).length; // 完璧な単語のカウント
 
         // Custom th class for sortable headers
         const ThSortable = ({ columnKey, children, className = "" }) => (
@@ -645,7 +717,7 @@
         );
 
         return (
-          <div className="space-y-6 fade-in">
+          <div className={`space-y-6 ${animClass}`}>
             <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
               <BarChart2 className="text-indigo-600"/> ダッシュボード
             </h2>
@@ -664,16 +736,16 @@
                 <span className="text-3xl font-bold text-blue-500">{totalAttempts}</span>
               </div>
               <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col items-center">
-                <span className="text-gray-500 text-sm mb-1">完璧な単語</span>
+                <span className="text-gray-500 text-sm mb-1">マスターした単語</span>
                 <span className="text-3xl font-bold text-yellow-500">{perfectWordsCount}</span>
               </div>
             </div>
 
             <div className="flex flex-col sm:flex-row gap-4">
-              <button onClick={() => setView('setup')} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white py-4 rounded-xl font-bold text-lg shadow-md transition flex justify-center items-center gap-2">
+              <button onClick={() => changeView('setup')} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white py-4 rounded-xl font-bold text-lg shadow-md transition flex justify-center items-center gap-2">
                 <Play fill="currentColor" /> 学習を始める
               </button>
-              <button onClick={() => setView('listening_setup')} className="flex-1 bg-purple-600 hover:bg-purple-700 text-white py-4 rounded-xl font-bold text-lg shadow-md transition flex justify-center items-center gap-2">
+              <button onClick={() => changeView('listening_setup')} className="flex-1 bg-purple-600 hover:bg-purple-700 text-white py-4 rounded-xl font-bold text-lg shadow-md transition flex justify-center items-center gap-2">
                 <Headphones fill="currentColor" /> 聞き流し
               </button>
             </div>
@@ -707,14 +779,20 @@
 
               {/* Bulk Action Bar */}
               {selectedIds.size > 0 && (
-                <div className="bg-indigo-50 px-4 py-3 border-b border-indigo-100 flex items-center justify-between fade-in">
+                <div className="bg-indigo-50 px-4 py-3 border-b border-indigo-100 flex flex-wrap items-center justify-between gap-3 fade-in">
                   <span className="font-bold text-indigo-800">{selectedIds.size} 件を選択中</span>
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <button 
                       onClick={() => setSelectedIds(new Set())} 
                       className="px-3 py-1.5 bg-white text-gray-600 rounded-lg border border-gray-300 hover:bg-gray-100 text-sm font-medium transition shadow-sm"
                     >
                       キャンセル
+                    </button>
+                    <button 
+                      onClick={handleBulkReset} 
+                      className="px-3 py-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 text-sm font-bold flex items-center gap-1 shadow-sm transition"
+                    >
+                      <RefreshCw size={16}/> 履歴リセット
                     </button>
                     <button 
                       onClick={handleBulkDelete} 
@@ -835,8 +913,10 @@
         );
       };
 
-      const renderDataManagement = () => (
-        <div className="max-w-2xl mx-auto space-y-6 fade-in">
+      const renderDataManagement = () => {
+        const animClass = slideDir === 'right' ? 'slide-in-right' : slideDir === 'left' ? 'slide-in-left' : 'fade-in';
+        return (
+        <div className={`max-w-2xl mx-auto space-y-6 ${animClass}`}>
           
           {/* インポート */}
           <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
@@ -934,9 +1014,11 @@
             </button>
           </div>
         </div>
-      );
+        );
+      };
 
       const renderSetupForm = (isListeningMode = false) => {
+        const animClass = slideDir === 'right' ? 'slide-in-right' : slideDir === 'left' ? 'slide-in-left' : 'fade-in';
         const toggleCategory = (cat) => {
           const currentExcluded = settings.excludedCategories || [];
           if (currentExcluded.includes(cat)) {
@@ -955,9 +1037,11 @@
         };
 
         const currentExcluded = settings.excludedCategories || [];
+        const filteredCount = generateQueue([], true).length;
+        const actualLimit = settings.limit === 'all' ? filteredCount : Math.min(filteredCount, Number(settings.limit));
 
         return (
-          <div className="max-w-2xl mx-auto space-y-6 fade-in">
+          <div className={`max-w-2xl mx-auto space-y-6 ${animClass}`}>
             <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
               <h2 className="text-2xl font-bold text-gray-800 mb-6 flex items-center gap-2">
                 <Settings className="text-indigo-600"/> {isListeningMode ? '聞き流しの設定' : '学習の設定'}
@@ -1039,8 +1123,8 @@
                       onChange={(e) => setSettings({...settings, excludePerfect: e.target.checked})}
                     />
                     <div>
-                      <div className="font-semibold text-gray-800">完璧な単語を除外</div>
-                      <div className="text-xs text-gray-500">正答率100%（1回以上解答）の単語を出題しません</div>
+                      <div className="font-semibold text-gray-800">マスターした単語を除外する（基本推奨）</div>
+                      <div className="text-xs text-gray-500">正解数5回以上かつ正答率90%以上の単語を出題しません。総復習したい場合はチェックを外してください。</div>
                     </div>
                   </label>
 
@@ -1116,9 +1200,24 @@
                 </div>
 
                 <div className="pt-4">
+                  <div className={`text-center text-sm font-bold mb-4 border py-4 rounded-xl ${isListeningMode ? 'bg-purple-50 border-purple-100 text-purple-800' : 'bg-indigo-50 border-indigo-100 text-indigo-800'}`}>
+                    現在の条件で対象となる単語: <span className={`text-3xl mx-1 ${isListeningMode ? 'text-purple-600' : 'text-indigo-600'}`}>{filteredCount}</span> 語
+                    {filteredCount > 0 && settings.limit !== 'all' && (
+                      <div className="text-gray-500 font-normal text-xs mt-2">
+                        ※ この中から <span className="font-bold">{actualLimit}</span> 語が {settings.order === 'random' ? 'ランダムに' : settings.order === 'weakest' ? '苦手な順に' : '登録順に'} 出題されます
+                      </div>
+                    )}
+                    {filteredCount === 0 && (
+                      <div className="text-rose-500 font-normal text-xs mt-2">
+                        ※ 条件に一致する単語がありません。設定を見直してください。
+                      </div>
+                    )}
+                  </div>
+
                   <button 
                     onClick={isListeningMode ? startListening : startStudy}
-                    className={`w-full text-white py-4 rounded-xl font-bold text-xl shadow-lg transition flex justify-center items-center gap-2 ${isListeningMode ? 'bg-purple-600 hover:bg-purple-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}
+                    disabled={filteredCount === 0}
+                    className={`w-full text-white py-4 rounded-xl font-bold text-xl shadow-lg transition flex justify-center items-center gap-2 ${filteredCount === 0 ? 'bg-gray-300 cursor-not-allowed text-gray-500 shadow-none' : (isListeningMode ? 'bg-purple-600 hover:bg-purple-700' : 'bg-indigo-600 hover:bg-indigo-700')}`}
                   >
                     {isListeningMode ? <Headphones fill="currentColor"/> : <Play fill="currentColor"/>} 
                     {isListeningMode ? '聞き流しスタート' : '学習スタート'}
@@ -1276,7 +1375,7 @@
                 <SkipForward size={20}/> 続ける
               </button>
               <button 
-                onClick={() => setView('dashboard')}
+                onClick={() => changeView('dashboard')}
                 className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-3 rounded-xl font-bold text-lg transition flex items-center justify-center gap-2"
               >
                 <Home size={20}/> ホーム
@@ -1297,7 +1396,7 @@
                <h2 className="text-2xl font-bold text-gray-800 mb-2">聞き流し完了</h2>
                <p className="text-gray-500 mb-8">すべての単語の再生が終わりました。</p>
                <button 
-                 onClick={() => setView('dashboard')}
+                 onClick={() => changeView('dashboard')}
                  className="bg-purple-600 hover:bg-purple-700 text-white px-8 py-3 rounded-xl font-bold shadow-md transition"
                >
                  ダッシュボードへ
@@ -1389,7 +1488,7 @@
             <button 
               onClick={() => {
                 window.speechSynthesis.cancel();
-                setView('dashboard');
+                changeView('dashboard');
               }}
               className="mt-12 text-gray-400 hover:text-gray-600 text-sm font-medium transition"
             >
@@ -1400,12 +1499,25 @@
       };
 
       return (
-        <>
+        <div 
+          onTouchStart={handleGlobalTouchStart}
+          onTouchEnd={handleGlobalTouchEnd}
+        >
           <style>{`
             .fade-in { animation: fadeIn 0.3s ease-out forwards; }
+            .slide-in-right { animation: slideInRight 0.25s cubic-bezier(0.2, 0.8, 0.2, 1) forwards; }
+            .slide-in-left { animation: slideInLeft 0.25s cubic-bezier(0.2, 0.8, 0.2, 1) forwards; }
             @keyframes fadeIn {
               from { opacity: 0; transform: translateY(10px); }
               to { opacity: 1; transform: translateY(0); }
+            }
+            @keyframes slideInRight {
+              from { opacity: 0; transform: translateX(30px); }
+              to { opacity: 1; transform: translateX(0); }
+            }
+            @keyframes slideInLeft {
+              from { opacity: 0; transform: translateX(-30px); }
+              to { opacity: 1; transform: translateX(0); }
             }
             .no-scrollbar::-webkit-scrollbar { display: none; }
             .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
@@ -1413,7 +1525,7 @@
           
           <Navigation />
           
-          <main className="max-w-4xl mx-auto px-4 pb-12">
+          <main className="max-w-4xl mx-auto px-4 pb-12 overflow-x-hidden">
             {view === 'dashboard' && renderDashboard()}
             {view === 'import' && renderDataManagement()}
             {view === 'setup' && renderSetupForm(false)}
@@ -1457,7 +1569,7 @@
               </div>
             </div>
           )}
-        </>
+        </div>
       );
     }
 

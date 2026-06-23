@@ -595,7 +595,20 @@
         setCurrentIndex(0);
         setIsFlipped(false);
         setSessionResults([]);
-        setView('study');
+        changeView('study');
+        if (settings.autoSpeak) speak(queue[0].english);
+      };
+
+      const handleRetryIncorrect = () => {
+        const incorrectResults = sessionResults.filter(r => !r.isCorrect);
+        if (incorrectResults.length === 0) return;
+        
+        const queue = incorrectResults.map(r => r.word);
+        setStudyQueue(queue);
+        setCurrentIndex(0);
+        setIsFlipped(false);
+        setSessionResults([]);
+        changeView('study');
         if (settings.autoSpeak) speak(queue[0].english);
       };
 
@@ -1365,22 +1378,30 @@
                </ul>
             </div>
 
-            <div className="flex flex-col sm:flex-row gap-4 justify-center mt-8">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-8">
+              {(total - correct) > 0 && (
+                <button 
+                  onClick={handleRetryIncorrect}
+                  className="bg-rose-50 border-2 border-rose-400 text-rose-600 hover:bg-rose-100 px-4 py-3 rounded-xl font-bold text-lg transition flex items-center justify-center gap-2 shadow-sm"
+                >
+                  <X size={20}/> 間違えた問題のみ復習
+                </button>
+              )}
               <button 
                 onClick={handleRetrySession}
-                className="flex-1 bg-white border-2 border-indigo-600 text-indigo-600 hover:bg-indigo-50 px-4 py-3 rounded-xl font-bold text-lg transition flex items-center justify-center gap-2"
+                className="bg-white border-2 border-indigo-600 text-indigo-600 hover:bg-indigo-50 px-4 py-3 rounded-xl font-bold text-lg transition flex items-center justify-center gap-2 shadow-sm"
               >
                 <RefreshCw size={20}/> もう一度繰り返す
               </button>
               <button 
                 onClick={handleContinueLearning}
-                className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-3 rounded-xl font-bold text-lg shadow-md transition flex items-center justify-center gap-2"
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-3 rounded-xl font-bold text-lg shadow-md transition flex items-center justify-center gap-2"
               >
                 <SkipForward size={20}/> 続ける
               </button>
               <button 
                 onClick={() => changeView('dashboard')}
-                className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-3 rounded-xl font-bold text-lg transition flex items-center justify-center gap-2"
+                className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-3 rounded-xl font-bold text-lg transition flex items-center justify-center gap-2 shadow-sm"
               >
                 <Home size={20}/> ホーム
               </button>

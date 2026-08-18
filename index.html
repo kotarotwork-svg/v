@@ -170,7 +170,7 @@
       // Extract unique categories from words
       const availableCategories = useMemo(() => {
         const cats = new Set(words.map(w => (w.category || '').trim()).filter(Boolean));
-        return Array.from(cats).sort();
+        return Array.from(cats).sort((a, b) => a.localeCompare(b, 'ja', { numeric: true, sensitivity: 'base' }));
       }, [words]);
 
       // --- Effects ---
@@ -666,7 +666,7 @@
               aValue = (aValue || '').toLowerCase();
               bValue = (bValue || '').toLowerCase();
               
-              const cmp = aValue.localeCompare(bValue, 'ja');
+              const cmp = aValue.localeCompare(bValue, 'ja', { numeric: true, sensitivity: 'base' });
               return sortConfig.direction === 'asc' ? cmp : -cmp;
             }
 
